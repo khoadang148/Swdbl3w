@@ -9,6 +9,8 @@ import Footer from '../components/common/Footer';
 import { useAuth } from '../context/AuthContext';
 import { useBooking } from '../context/BookingContext';
 import axios from 'axios';
+import HmacSHA256 from 'crypto-js/hmac-sha256';
+import Hex from 'crypto-js/enc-hex';
 
 // Styled components không thay đổi
 const PageContainer = styled.div`
@@ -258,6 +260,18 @@ const SeatSelectionPage = () => {
   const [error, setError] = useState(null);
   const backendUrl = process.env.REACT_APP_API_URL || 'https://galaxycinema-a6eeaze9afbagaft.southeastasia-01.azurewebsites.net';
 
+  // Cấu hình ZaloPay (tạm thời đặt trong frontend - không an toàn, chỉ để demo)
+  const ZALOPAY_CONFIG = {
+    PaymentUrl: "https://sandbox.zalopay.com.vn/v001/tpe/createorder",
+    AppId: 2554,
+    AppUser: "ZaloPayDemo",
+    Key1: "sdngKKJmqEMzvh5QQcdD2A9XBSKUNaYn",
+    Key2: "trMrHtvjo6myautxDUiAcYsVtaeQ8nhf",
+    IpnUrl: "https://swd-392-alpha.vercel.app",
+    CallbackUrl: "https://galaxycinema-a6eeaze9afbagaft.southeastasia-01.azurewebsites.net/Zalopay/Callback",
+    OrderUrl: "https://sandbox.zalopay.com.vn/v001/tpe/getstatusbyapptransid"
+  };
+
   useEffect(() => {
     if (!currentUser) {
       navigate('/login');
@@ -378,6 +392,52 @@ const SeatSelectionPage = () => {
     return selectedSeats.reduce((total, seat) => total + seat.price, 0);
   };
 
+  // Hàm tạo chữ ký cho ZaloPay
+  const createZaloPaySignature = (data) => {
+    return HmacSHA256(data, ZALOPAY_CONFIG.Key1).toString(Hex);
+  };
+
+  // Hàm tạo URL thanh toán ZaloPay (tạm thời trong frontend)
+  const createZaloPayOrder = async (ticketData, redirectUrl) => {
+    try {
+      const appTransId = `${new Date().getTime()}_${Math.floor(Math.random() * 1000)}`;
+      const order = {
+        app_id: ZALOPAY_CONFIG.AppId,
+        app_user: ZALOPAY_CONFIG.AppUser,
+        app_time: Date.now(),
+        amount: ticketData.totalPrice,
+        app_trans_id: appTransId,
+        embed_data: JSON.stringify({
+          redirecturl: `${redirectUrl}/payment-callback?apptransid=${appTransId}`,
+        }),
+        item: JSON.stringify([
+          {
+            ticketId: ticketData.ticketId,
+            movie: movie.title,
+            seats: selectedSeats.map(seat => `${seat.row}${seat.number}`).join(', '),
+          },
+        ]),
+        description: `Thanh toán vé xem phim ${movie.title}`,
+        bank_code: "zalopayapp",
+        callback_url: ZALOPAY_CONFIG.CallbackUrl,
+      };
+
+      // Tạo chữ ký (mac)
+      const dataSign = `${order.app_id}|${order.app_trans_id}|${order.app_user}|${order.amount}|${order.app_time}|${order.embed_data}|${order.item}`;
+      order.mac = createZaloPaySignature(dataSign);
+
+      // Gửi yêu cầu tạo đơn hàng đến ZaloPay
+      const response = await axios.post(ZALOPAY_CONFIG.PaymentUrl, order);
+      if (response.data.return_code === 1) {
+        return { paymentUrl: response.data.order_url, appTransId };
+      } else {
+        throw new Error('Không thể tạo đơn hàng ZaloPay: ' + response.data.return_message);
+      }
+    } catch (error) {
+      throw new Error('Lỗi khi tạo đơn hàng ZaloPay: ' + error.message);
+    }
+  };
+
   const handleContinue = async () => {
     if (selectedSeats.length === 0) {
       setError('Vui lòng chọn ít nhất một ghế.');
@@ -388,9 +448,6 @@ const SeatSelectionPage = () => {
     setError(null);
 
     try {
-      // Tạo appTransId duy nhất
-      const appTransId = `${new Date().getTime()}_${Math.floor(Math.random() * 1000)}`;
-
       // Chuẩn bị payload cho API CreateTicket
       const seatAmount = selectedSeats.length;
       const seatIds = selectedSeats.map(seat => seat.id);
@@ -402,7 +459,6 @@ const SeatSelectionPage = () => {
         projectionId: showTime.id,
         roomId: showTime.room.id,
         totalPrice,
-        appTransId, // Thêm appTransId vào payload
       };
 
       // Logging để kiểm tra payload
@@ -425,44 +481,38 @@ const SeatSelectionPage = () => {
         throw new Error('Không thể tạo vé. Vui lòng thử lại.');
       }
 
+      // Log phản hồi từ API để kiểm tra
+      console.log('CreateTicket Response:', ticketResponse.data);
+
       // Lưu ghế đã chọn
       setSelectedSeats(selectedSeats);
 
-      // Gọi API backend để tạo URL thanh toán ZaloPay (giả định endpoint là /Zalopay/CreateOrder)
-      const zaloPayPayload = {
-        ticketId: ticketResponse.data.id, // Giả định API CreateTicket trả về ticketId
-        amount: totalPrice,
-        appTransId,
-        description: `Thanh toán vé xem phim ${movie.title}`,
-        seats: selectedSeats.map(seat => `${seat.row}${seat.number}`).join(', '),
-      };
+      // Lấy ticketId và redirectUrl từ phản hồi
+      const ticketId = ticketResponse.data.id; // Từ BaseEntity
+      const redirectUrl = ticketResponse.data.redirectUrl; // Từ TicketResponseDTO
 
-      console.log('Calling ZaloPay CreateOrder API:', `${backendUrl}/Zalopay/CreateOrder`);
-      console.log('ZaloPay Payload:', zaloPayPayload);
-
-      const zaloPayResponse = await axios.post(
-        `${backendUrl}/Zalopay/CreateOrder`,
-        zaloPayPayload,
-        {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('token')}`,
-            'Content-Type': 'application/json',
-          },
-        }
-      );
-
-      if (zaloPayResponse.status !== 200 || !zaloPayResponse.data.orderUrl) {
-        throw new Error('Không thể tạo URL thanh toán ZaloPay.');
+      if (!redirectUrl) {
+        throw new Error('Không tìm thấy RedirectUrl trong phản hồi từ server.');
       }
 
+      // Tạo URL thanh toán ZaloPay
+      const ticketData = {
+        ticketId,
+        totalPrice,
+      };
+      const { paymentUrl, appTransId } = await createZaloPayOrder(ticketData, redirectUrl);
+
+      // Lưu appTransId để sử dụng sau
+      localStorage.setItem('appTransId', appTransId);
+
       // Chuyển hướng người dùng đến URL thanh toán ZaloPay
-      window.location.href = zaloPayResponse.data.orderUrl;
+      window.location.href = paymentUrl;
     } catch (error) {
       if (error.response) {
         const status = error.response.status;
         const errorMessage = error.response.data?.message || error.response.data?.error || 'Có lỗi xảy ra khi tạo vé.';
         if (status === 400) {
-          setError('Dữ liệu không hợp lệ. Vui lòng kiểm tra lại thông tin.');
+          setError(`Dữ liệu không hợp lệ: ${errorMessage}`);
         } else if (status === 401) {
           setError('Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.');
           setTimeout(() => navigate('/login'), 3000);
