@@ -388,35 +388,30 @@ const SeatSelectionPage = () => {
     setError(null);
 
     try {
+      // Tạo appTransId duy nhất
+      const appTransId = `${new Date().getTime()}_${Math.floor(Math.random() * 1000)}`;
+
       // Chuẩn bị payload cho API CreateTicket
       const seatAmount = selectedSeats.length;
       const seatIds = selectedSeats.map(seat => seat.id);
       const totalPrice = calculateTotalPrice();
-      const userId = currentUser?.id; // Giả định currentUser có id
-
-      if (!userId) {
-        throw new Error('Không thể xác định người dùng. Vui lòng đăng nhập lại.');
-      }
 
       const ticketPayload = {
         seatAmount,
         seatIds,
-        createBy: userId,
         projectionId: showTime.id,
         roomId: showTime.room.id,
         totalPrice,
-        updateBy: userId,
+        appTransId, // Thêm appTransId vào payload
       };
 
-      // Logging để kiểm tra URL và payload
-      const createTicketUrl = `${backendUrl}/Ticket/CreateTicket`;
-      console.log('Calling CreateTicket API:', createTicketUrl);
+      // Logging để kiểm tra payload
+      console.log('Calling CreateTicket API:', `${backendUrl}/Ticket/CreateTicket`);
       console.log('Payload:', ticketPayload);
-      console.log('Token:', localStorage.getItem('token'));
 
       // Gọi API CreateTicket
-      const response = await axios.post(
-        createTicketUrl,
+      const ticketResponse = await axios.post(
+        `${backendUrl}/Ticket/CreateTicket`,
         ticketPayload,
         {
           headers: {
@@ -426,28 +421,48 @@ const SeatSelectionPage = () => {
         }
       );
 
-      if (response.status !== 200 && response.status !== 201) {
+      if (ticketResponse.status !== 200 && ticketResponse.status !== 201) {
         throw new Error('Không thể tạo vé. Vui lòng thử lại.');
       }
 
-      // Lưu ghế đã chọn và chuyển hướng
+      // Lưu ghế đã chọn
       setSelectedSeats(selectedSeats);
-      navigate('/booking/checkout', {
-        state: {
-          movie,
-          showTime,
-          selectedSeats,
-          ticket: response.data, // Truyền dữ liệu vé vừa tạo (nếu cần)
-        },
-      });
+
+      // Gọi API backend để tạo URL thanh toán ZaloPay (giả định endpoint là /Zalopay/CreateOrder)
+      const zaloPayPayload = {
+        ticketId: ticketResponse.data.id, // Giả định API CreateTicket trả về ticketId
+        amount: totalPrice,
+        appTransId,
+        description: `Thanh toán vé xem phim ${movie.title}`,
+        seats: selectedSeats.map(seat => `${seat.row}${seat.number}`).join(', '),
+      };
+
+      console.log('Calling ZaloPay CreateOrder API:', `${backendUrl}/Zalopay/CreateOrder`);
+      console.log('ZaloPay Payload:', zaloPayPayload);
+
+      const zaloPayResponse = await axios.post(
+        `${backendUrl}/Zalopay/CreateOrder`,
+        zaloPayPayload,
+        {
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem('token')}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      if (zaloPayResponse.status !== 200 || !zaloPayResponse.data.orderUrl) {
+        throw new Error('Không thể tạo URL thanh toán ZaloPay.');
+      }
+
+      // Chuyển hướng người dùng đến URL thanh toán ZaloPay
+      window.location.href = zaloPayResponse.data.orderUrl;
     } catch (error) {
-      // Cải thiện xử lý lỗi
       if (error.response) {
-        // Lỗi từ server (có phản hồi)
         const status = error.response.status;
         const errorMessage = error.response.data?.message || error.response.data?.error || 'Có lỗi xảy ra khi tạo vé.';
-        if (status === 404) {
-          setError('Không tìm thấy endpoint tạo vé. Vui lòng kiểm tra lại cấu hình server.');
+        if (status === 400) {
+          setError('Dữ liệu không hợp lệ. Vui lòng kiểm tra lại thông tin.');
         } else if (status === 401) {
           setError('Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.');
           setTimeout(() => navigate('/login'), 3000);
@@ -455,10 +470,8 @@ const SeatSelectionPage = () => {
           setError(errorMessage);
         }
       } else if (error.request) {
-        // Không nhận được phản hồi từ server
         setError('Không thể kết nối đến server. Vui lòng kiểm tra kết nối mạng hoặc URL API.');
       } else {
-        // Lỗi khác
         setError(error.message || 'Có lỗi xảy ra khi tạo vé. Vui lòng thử lại.');
       }
     } finally {
@@ -625,7 +638,7 @@ const SeatSelectionPage = () => {
           <ButtonContainer>
             <BackButton onClick={handleBack}>Quay Lại</BackButton>
             <ContinueButton disabled={selectedSeats.length === 0 || loading} onClick={handleContinue}>
-              {loading ? 'Đang kiểm tra...' : 'Tiếp Tục'}
+              {loading ? 'Đang xử lý...' : 'Tiếp Tục'}
             </ContinueButton>
           </ButtonContainer>
         </SeatSelectionContainer>

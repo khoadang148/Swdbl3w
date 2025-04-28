@@ -1,4 +1,3 @@
-// PaymentCallback.js
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import styled from 'styled-components';
@@ -91,34 +90,36 @@ const PaymentCallback = () => {
     const verifyPayment = async () => {
       try {
         // Bước 1: Kiểm tra trạng thái giao dịch ZaloPay
-        const paymentResponse = await axios.get(`${backendUrl}/ZaloPay/CheckOrderStatus`, {
-          params: { apptransid },
+        // Gửi apptransid qua query parameter (giả định backend có thể xử lý qua GlobalCache)
+        const paymentResponse = await axios.get(`${backendUrl}/Zalopay/CheckOrderStatus`, {
           headers: {
             Authorization: `Bearer ${localStorage.getItem("token")}`,
           },
         });
 
-        if (paymentResponse.data.success) {
+        const isSuccess = paymentResponse.data; // API trả về true/false
+        if (isSuccess) {
           setStatus('success');
           setMessage(`Thanh toán thành công! Mã giao dịch: ${apptransid}`);
 
-          // Bước 2: Lấy chi tiết vé bằng API /Ticket/GetTicketBYId
-          const ticketId = paymentResponse.data.ticketId; // Giả sử API trả về ticketId
-          if (ticketId) {
-            const ticketResponse = await axios.get(`${backendUrl}/Ticket/GetTicketBYId/${ticketId}`, {
-              headers: {
-                Authorization: `Bearer ${localStorage.getItem("token")}`,
-              },
-            });
+          // Bước 2: Lấy chi tiết vé
+          const ticketsResponse = await axios.get(`${backendUrl}/Ticket/getallmyticket/1/10`, {
+            headers: {
+              Authorization: `Bearer ${localStorage.getItem("token")}`,
+            },
+          });
 
-            const ticketData = ticketResponse.data;
+          const ticketData = ticketsResponse.data.items.find(ticket => ticket.appTransId === apptransid);
+          if (ticketData && ticketData.tickets && ticketData.tickets.length > 0) {
+            const firstTicket = ticketData.tickets[0];
             const formattedTicket = {
               appTransId: apptransid,
-              title: ticketData.title || 'Unknown',
-              startTime: ticketData.startTime || new Date(),
-              roomNumber: ticketData.roomNumber || 'N/A',
-              seats: ticketData.seatNumber ? [ticketData.seatNumber] : [],
-              totalPrice: ticketData.price || 0,
+              title: firstTicket.title || 'Unknown',
+              startTime: firstTicket.startTime || new Date(),
+              endTime: firstTicket.endTime || new Date(new Date(firstTicket.startTime).getTime() + 2 * 60 * 60 * 1000),
+              roomNumber: firstTicket.roomNumber || 'N/A',
+              seats: ticketData.tickets.map(t => t.seatNumber) || [],
+              totalPrice: ticketData.tickets.reduce((sum, t) => sum + t.price, 0),
             };
             setTicketDetails(formattedTicket);
             setRecentTickets(formattedTicket); // Lưu vào BookingContext
@@ -128,7 +129,7 @@ const PaymentCallback = () => {
           resetBooking();
         } else {
           setStatus('error');
-          setMessage('Thanh toán thất bại. Vui lòng thử lại.');
+          setMessage('Thanh toán thất bại. Vé đã bị hủy.');
         }
       } catch (error) {
         setStatus('error');
@@ -160,7 +161,7 @@ const PaymentCallback = () => {
             </DetailRow>
             <DetailRow>
               <span>Suất chiếu:</span>
-              <span>{format(new Date(ticketDetails.startTime), 'dd/MM/yyyy HH:mm')}</span>
+              <span>{format(new Date(ticketDetails.startTime), 'dd/MM/yyyy HH:mm')} - {format(new Date(ticketDetails.endTime), 'HH:mm')}</span>
             </DetailRow>
             <DetailRow>
               <span>Phòng:</span>
